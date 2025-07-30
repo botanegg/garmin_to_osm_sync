@@ -1,0 +1,2 @@
+# Run the sync script every 6 hours
+0 */6 * * * root    python3 /app/main.py >> /var/log/cron.log 2>&1
