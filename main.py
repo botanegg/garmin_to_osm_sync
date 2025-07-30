@@ -62,7 +62,7 @@ def upload_gpx_to_osm(gpx_filepath, description, tags, visibility, osm_username,
     """
     Uploads a GPX file to OpenStreetMap using the GPX upload API.
     """
-    url = "https://www.openstreetmap.org/api/0.6/gpx/create"
+    url = "https://api.openstreetmap.org/api/0.6/gpx"  # updated endpoint
     with open(gpx_filepath, "rb") as gpx_file:
         files = {"file": (os.path.basename(gpx_filepath), gpx_file, "application/gpx+xml")}
         data = {

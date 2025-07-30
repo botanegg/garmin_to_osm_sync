@@ -19,9 +19,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the main application script
 COPY main.py .
 
-# Create a directory for downloads
-RUN mkdir -p /app/downloads
-
 # Copy the crontab file to the cron directory
 COPY crontab /etc/cron.d/sync-cron
 
