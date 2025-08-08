@@ -1,30 +1,26 @@
 import os
 from dotenv import load_dotenv
-
-load_dotenv()
 import logging
 from datetime import datetime
+import requests
+from requests_oauthlib import OAuth1Session
 from garminconnect import (
     Garmin,
     GarminConnectConnectionError,
     GarminConnectTooManyRequestsError,
     GarminConnectAuthenticationError,
 )
-import requests
-from osmapi import OsmApi, OsmApiError
-
 
 # --- CONFIGURATION ---
-# Credentials will be loaded from environment variables for security
+load_dotenv()
 GARMIN_EMAIL = os.getenv("GARMIN_EMAIL")
 GARMIN_PASSWORD = os.getenv("GARMIN_PASSWORD")
-OSM_USERNAME = os.getenv("OSM_USERNAME")
-OSM_PASSWORD = os.getenv("OSM_PASSWORD")
+CONSUMER_KEY = os.getenv("OSM_CONSUMER_KEY")
+CONSUMER_SECRET = os.getenv("OSM_CONSUMER_SECRET")
+ACCESS_TOKEN = os.getenv("OSM_ACCESS_TOKEN")
+ACCESS_SECRET = os.getenv("OSM_ACCESS_SECRET")
 
-# File to store IDs of already processed activities
-# This file will be created in the same directory as the script
 PROCESSED_ACTIVITIES_FILE = "processed_ids.txt"
-# Directory to temporarily store downloaded GPX files
 DOWNLOAD_DIR = "downloads"
 
 # --- LOGGING SETUP ---
@@ -49,20 +45,18 @@ def get_processed_ids():
         return set()
 
 def add_processed_id(activity_id):
-    """
-    Appends a new processed activity ID to the local file.
-    """
-    try:
-        with open(PROCESSED_ACTIVITIES_FILE, "a") as f:
-            f.write(f"{activity_id}\n")
-    except Exception as e:
-        logging.error(f"Error writing to processed IDs file: {e}")
+    with open(PROCESSED_ACTIVITIES_FILE, "a") as f:
+        f.write(f"{activity_id}\n")
 
-def upload_gpx_to_osm(gpx_filepath, description, tags, visibility, osm_username, osm_password):
-    """
-    Uploads a GPX file to OpenStreetMap using the GPX upload API.
-    """
-    url = "https://api.openstreetmap.org/api/0.6/gpx"  # updated endpoint
+def upload_gpx_to_osm_oauth(gpx_filepath, description, tags, visibility):
+    oauth = OAuth1Session(
+        CONSUMER_KEY,
+        client_secret=CONSUMER_SECRET,
+        resource_owner_key=ACCESS_TOKEN,
+        resource_owner_secret=ACCESS_SECRET
+    )
+
+    url = "https://www.openstreetmap.org/api/0.6/gpx/create"
     with open(gpx_filepath, "rb") as gpx_file:
         files = {"file": (os.path.basename(gpx_filepath), gpx_file, "application/gpx+xml")}
         data = {
@@ -70,119 +64,74 @@ def upload_gpx_to_osm(gpx_filepath, description, tags, visibility, osm_username,
             "tags": tags,
             "visibility": visibility
         }
-        response = requests.post(
-            url,
-            files=files,
-            data=data,
-            auth=(osm_username, osm_password)
-        )
+        response = oauth.post(url, files=files, data=data)
         if response.status_code != 200:
             raise Exception(f"GPX upload failed: {response.status_code} {response.text}")
         return response
 
 def main():
-    """
-    Main function to run the synchronization process.
-    """
     logging.info("--- Starting Garmin to OSM Sync Service ---")
 
     # Ensure download directory exists
     if not os.path.exists(DOWNLOAD_DIR):
         os.makedirs(DOWNLOAD_DIR)
 
-    # Check for credentials
-    if not all([GARMIN_EMAIL, GARMIN_PASSWORD, OSM_USERNAME, OSM_PASSWORD]):
-        logging.error("FATAL: Environment variables for credentials are not set. Exiting.")
+    if not all([GARMIN_EMAIL, GARMIN_PASSWORD, CONSUMER_KEY, CONSUMER_SECRET, ACCESS_TOKEN, ACCESS_SECRET]):
+        logging.error("FATAL: Missing credentials in .env file. Exiting.")
         return
 
     processed_ids = get_processed_ids()
     logging.info(f"Loaded {len(processed_ids)} already processed activity IDs.")
 
     try:
-        # --- 1. CONNECT TO GARMIN AND GET ACTIVITIES ---
-        logging.info("Attempting to log in to Garmin Connect...")
+        logging.info("Logging in to Garmin Connect...")
         garmin_api = Garmin(GARMIN_EMAIL, GARMIN_PASSWORD)
         garmin_api.login()
-        logging.info("Garmin Connect login successful.")
+        logging.info("Garmin login successful.")
 
-        # Fetch the last 10 activities to check for new ones
         activities = garmin_api.get_activities(0, 10)
-        if not activities:
-            logging.info("No activities found in Garmin Connect account.")
-            return
-
-        # Filter out activities that have already been processed
-        new_activities = [
-            act for act in activities if str(act.get("activityId")) not in processed_ids
-        ]
+        new_activities = [act for act in activities if str(act.get("activityId")) not in processed_ids]
 
         if not new_activities:
             logging.info("No new activities to sync.")
             return
 
-        logging.info(f"Found {len(new_activities)} new activities to sync.")
-
-        # --- 2. CONNECT TO OSM AND PROCESS NEW ACTIVITIES ---
-        logging.info("Connecting to OpenStreetMap API...")
-        osm_api = OsmApi(username=OSM_USERNAME, password=OSM_PASSWORD)
-
-        # Process from oldest to newest to maintain chronological order
         for activity in reversed(new_activities):
             activity_id = activity.get("activityId")
             if not activity_id:
-                logging.warning(f"Found an activity with no ID. Skipping: {activity}")
                 continue
 
-            activity_name = activity.get("activityName", f"Garmin Activity {activity_id}")
-            activity_type = activity.get("activityType", {}).get("typeKey", "unknown")
-            start_time_local = activity.get("startTimeLocal", "Unknown time")
-
+            name = activity.get("activityName", f"Garmin Activity {activity_id}")
+            type_ = activity.get("activityType", {}).get("typeKey", "unknown")
+            start_time = activity.get("startTimeLocal", "Unknown time")
             gpx_filepath = os.path.join(DOWNLOAD_DIR, f"{activity_id}.gpx")
 
             try:
-                logging.info(f"Processing activity: '{activity_name}' (ID: {activity_id})")
-
-                # Download GPX file from Garmin
+                logging.info(f"Processing activity: {name} (ID: {activity_id})")
                 gpx_data = garmin_api.download_activity(
                     activity_id, dl_fmt=garmin_api.ActivityDownloadFormat.GPX
                 )
                 with open(gpx_filepath, "wb") as f:
                     f.write(gpx_data)
-                logging.info(f"GPX file downloaded to {gpx_filepath}")
 
-                # Upload GPX file to OSM
-                description = f"Garmin Activity: {activity_name} on {start_time_local}"
-                tags = f"garmin,sync,{activity_type}"
+                description = f"Garmin Activity: {name} on {start_time}"
+                tags = f"garmin,sync,{type_}"
                 visibility = "identifiable"
 
-                logging.info("Uploading to OpenStreetMap...")
-                upload_gpx_to_osm(
-                    gpx_filepath=gpx_filepath,
-                    description=description,
-                    tags=tags,
-                    visibility=visibility,
-                    osm_username=OSM_USERNAME,
-                    osm_password=OSM_PASSWORD
-                )
-                logging.info(f"Successfully uploaded track for activity {activity_id} to OSM.")
-
-                # If successful, add to processed list
+                upload_gpx_to_osm_oauth(gpx_filepath, description, tags, visibility)
+                logging.info(f"Uploaded activity {activity_id} to OSM.")
                 add_processed_id(activity_id)
 
-            except OsmApiError as e:
-                logging.error(f"OSM API Error while processing activity {activity_id}: {e}")
             except Exception as e:
-                logging.error(f"An unexpected error occurred for activity {activity_id}: {e}")
+                logging.error(f"Error with activity {activity_id}: {e}")
             finally:
-                # Clean up the downloaded GPX file
                 if os.path.exists(gpx_filepath):
                     os.remove(gpx_filepath)
-                    logging.info(f"Cleaned up temporary file {gpx_filepath}")
 
     except (GarminConnectConnectionError, GarminConnectTooManyRequestsError, GarminConnectAuthenticationError) as e:
-        logging.error(f"Garmin Connect API Error: {e}")
+        logging.error(f"Garmin Connect error: {e}")
     except Exception as e:
-        logging.error(f"A critical error occurred: {e}")
+        logging.error(f"Critical error: {e}")
     finally:
         logging.info("--- Sync Service Finished ---")
 
