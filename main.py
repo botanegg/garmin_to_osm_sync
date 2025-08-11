@@ -11,7 +11,7 @@ import webbrowser
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlencode, parse_qs
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 from dotenv import load_dotenv
@@ -148,14 +148,14 @@ def exchange_code_for_tokens(code: str):
     expires_in = j.get("expires_in")
     expires_at = None
     if expires_in:
-        expires_at = (datetime.utcnow() + timedelta(seconds=int(expires_in))).isoformat()
+        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))).isoformat()
 
     tokens = {
         "access_token": j.get("access_token"),
         "refresh_token": j.get("refresh_token"),
         "expires_at": expires_at,
         "scope": j.get("scope"),
-        "obtained_at": datetime.utcnow().isoformat(),
+        "obtained_at": datetime.now(timezone.utc).isoformat(),
     }
     save_tokens(tokens)
     return tokens
@@ -175,14 +175,14 @@ def refresh_tokens(refresh_token: str):
     expires_in = j.get("expires_in")
     expires_at = None
     if expires_in:
-        expires_at = (datetime.utcnow() + timedelta(seconds=int(expires_in))).isoformat()
+        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))).isoformat()
 
     tokens = {
         "access_token": j.get("access_token"),
         "refresh_token": j.get("refresh_token", refresh_token),
         "expires_at": expires_at,
         "scope": j.get("scope"),
-        "obtained_at": datetime.utcnow().isoformat(),
+        "obtained_at": datetime.now(timezone.utc).isoformat(),
     }
     save_tokens(tokens)
     return tokens
@@ -208,7 +208,7 @@ def ensure_access_token():
     expires_at = tokens.get("expires_at")
     if expires_at:
         expires_dt = datetime.fromisoformat(expires_at)
-        if datetime.utcnow() + timedelta(seconds=60) >= expires_dt:
+        if datetime.now(timezone.utc) + timedelta(seconds=60) >= expires_dt:
             logger.info("Access token expired or near expiry, refreshing using refresh_token")
             tokens = refresh_tokens(tokens.get("refresh_token"))
             return tokens.get("access_token")
