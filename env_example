@@ -1,0 +1,16 @@
+# Garmin
+GARMIN_EMAIL=your_email@example.com
+GARMIN_PASSWORD=your_garmin_password
+
+# OSM OAuth2 (зарегистрируйте приложение в https://www.openstreetmap.org/oauth2/clients)
+OSM_CLIENT_ID=your_app_client_id
+OSM_CLIENT_SECRET=your_app_client_secret
+REDIRECT_URI=http://127.0.0.1:8080/callback
+OSM_USERNAME=your_osm_username   # опционально
+
+# Optional / defaults
+DOWNLOAD_DIR=downloads
+DB_FILE=data.db
+TOKENS_FILE=tokens.json
+MAX_ACTIVITIES=10
+DRY_RUN=false
