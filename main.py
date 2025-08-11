@@ -1,6 +1,32 @@
 """
 Garmin Connect -> OpenStreetMap GPX sync (OAuth2)
 
+This version uses OSM OAuth2 (interactive browser flow) to obtain an access token
+and refresh token. Tokens are stored locally in `tokens.json` so you don't need to
+re-authorize on every run. If a token is missing or expired the script will open
+a browser to authorize and then exchange the code for tokens.
+
+.env variables expected (examples):
+
+# Garmin
+GARMIN_EMAIL=you@example.com
+GARMIN_PASSWORD=your_garmin_password
+
+# OSM OAuth2 (register your app at https://www.openstreetmap.org/oauth2/clients)
+OSM_CLIENT_ID=your_client_id
+OSM_CLIENT_SECRET=your_client_secret
+REDIRECT_URI=http://127.0.0.1:8080/callback
+OSM_USERNAME=your_osm_username
+
+# Optional
+DOWNLOAD_DIR=downloads
+PROCESSED_ACTIVITIES_FILE=processed_ids.txt
+MAX_ACTIVITIES=10
+DRY_RUN=false
+
+# Recommended pip packages:
+# pip install garminconnect requests python-dotenv requests-oauthlib
+
 """
 
 import os
@@ -14,6 +40,7 @@ from urllib.parse import urlencode, parse_qs
 from datetime import datetime, timedelta, timezone
 
 import requests
+import sqlite3
 from dotenv import load_dotenv
 
 # Garmin library imports
@@ -227,23 +254,64 @@ def upload_gpx_with_bearer(access_token: str, gpx_filepath: Path, description: s
 
 # --- File helpers ---
 
-def get_processed_ids():
+DB_FILE = Path(os.getenv("DB_FILE", "data.db"))
+
+def init_db():
+    """Create the processed_activities table if it doesn't exist."""
     try:
-        if not PROCESSED_ACTIVITIES_FILE.exists():
-            return set()
-        with PROCESSED_ACTIVITIES_FILE.open("r", encoding="utf-8") as f:
-            return {line.strip() for line in f if line.strip()}
+        conn = sqlite3.connect(DB_FILE)
+        cur = conn.cursor()
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS processed_activities (
+            activity_id TEXT PRIMARY KEY,
+            uploaded_at TEXT,
+            gpx_id TEXT,
+            status TEXT,
+            metadata TEXT
+        )
+        """)
+        conn.commit()
     except Exception:
-        logger.exception("Failed to read processed ids file")
+        logger.exception("Failed to initialize DB")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def get_processed_ids():
+    """Return a set of processed activity IDs from the SQLite DB."""
+    try:
+        init_db()
+        conn = sqlite3.connect(DB_FILE)
+        cur = conn.cursor()
+        cur.execute("SELECT activity_id FROM processed_activities")
+        rows = cur.fetchall()
+        conn.close()
+        return {r[0] for r in rows}
+    except Exception:
+        logger.exception("Failed to read processed ids from DB")
         return set()
 
 
-def add_processed_id(activity_id):
+def add_processed_id(activity_id, gpx_id=None, status='uploaded', metadata=None):
+    """Insert or update a processed activity into the DB.
+
+    Keeps track of when it was uploaded, optional gpx_id and arbitrary metadata (JSON).
+    """
     try:
-        with PROCESSED_ACTIVITIES_FILE.open("a", encoding="utf-8") as f:
-            f.write(f"{activity_id}\n")
+        init_db()
+        conn = sqlite3.connect(DB_FILE)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT OR REPLACE INTO processed_activities (activity_id, uploaded_at, gpx_id, status, metadata) VALUES (?, ?, ?, ?, ?)",
+            (str(activity_id), datetime.now(timezone.utc).isoformat(), gpx_id, status, json.dumps(metadata) if metadata else None),
+        )
+        conn.commit()
+        conn.close()
     except Exception:
-        logger.exception("Failed to append processed id")
+        logger.exception("Failed to insert processed id into DB")
 
 # --- MAIN ---
 
