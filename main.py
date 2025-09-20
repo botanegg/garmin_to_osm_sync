@@ -34,6 +34,7 @@ import json
 import logging
 import time
 import webbrowser
+import argparse
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlencode, parse_qs
@@ -315,9 +316,13 @@ def add_processed_id(activity_id, gpx_id=None, status='uploaded', metadata=None)
 
 # --- MAIN ---
 
-def main():
-    logger.info("Starting Garmin->OSM sync (OAuth2)")
 
+def main():
+    parser = argparse.ArgumentParser(description="Garmin Connect -> OSM GPX sync")
+    parser.add_argument("--history", action="store_true", help="Исторический режим: медленно, не более 5 активностей за запуск, увеличенный таймаут между запросами")
+    args = parser.parse_args()
+
+    logger.info("Starting Garmin->OSM sync (OAuth2)")
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
     if not all([GARMIN_EMAIL, GARMIN_PASSWORD]):
@@ -344,6 +349,21 @@ def main():
         if not new_activities:
             logger.info("No new activities to process")
             return
+
+        # --- HISTORY MODE ---
+        # In history mode start with 1s sleep and increase exponentially on upload errors
+        # up to max_sleep. Stop after max_consecutive_errors uploads in a row fail.
+        max_sleep = 10
+        initial_sleep = 1
+        max_consecutive_errors = 3
+
+        if args.history:
+            sleep_time = initial_sleep
+            logger.info("--history mode: processing %d activities (fetched %d), starting sleep %ds and exponential backoff up to %ds on errors", len(new_activities), len(new_activities), sleep_time, max_sleep)
+        else:
+            sleep_time = 1
+
+        consecutive_errors = 0
 
         for activity in reversed(new_activities):
             activity_id = activity.get("activityId")
@@ -373,25 +393,48 @@ def main():
                 if DRY_RUN:
                     logger.info("Dry run: would upload %s", gpx_path)
                     add_processed_id(activity_id)
+                    # treat as success
+                    consecutive_errors = 0
+                    if args.history:
+                        sleep_time = initial_sleep
                 else:
+                    # attempt upload (with single retry on 401 after refresh)
                     resp = upload_gpx_with_bearer(access_token, gpx_path, desc, tags, visibility)
                     if resp.status_code == 401:
                         logger.warning("Upload returned 401. Trying to refresh token and retry once.")
                         # attempt refresh
                         tokens = load_tokens()
                         if tokens and tokens.get("refresh_token"):
-                            tokens = refresh_tokens(tokens.get("refresh_token"))
-                            access_token = tokens.get("access_token")
-                            resp = upload_gpx_with_bearer(access_token, gpx_path, desc, tags, visibility)
+                            try:
+                                tokens = refresh_tokens(tokens.get("refresh_token"))
+                                access_token = tokens.get("access_token")
+                                resp = upload_gpx_with_bearer(access_token, gpx_path, desc, tags, visibility)
+                            except Exception:
+                                logger.exception("Token refresh failed during retry")
 
                     if not resp.ok:
-                        logger.error("Failed to upload %s. status=%s body=%s", gpx_path, resp.status_code, resp.text[:500])
+                        # upload failed
+                        logger.error("Failed to upload %s. status=%s body=%s", gpx_path, resp.status_code if resp is not None else 'N/A', (resp.text[:500] if resp is not None and resp.text else ''))
+                        consecutive_errors += 1
+                        logger.info("Consecutive upload errors: %d", consecutive_errors)
+                        # exponential backoff only in history mode
+                        if args.history:
+                            sleep_time = min(max_sleep, sleep_time * 2)
+                            logger.info("Increasing sleep_time to %ds due to errors", sleep_time)
+
+                        if consecutive_errors >= max_consecutive_errors:
+                            logger.error("Aborting: %d consecutive upload errors", consecutive_errors)
+                            break
                     else:
+                        # success
                         gpx_id = resp.text.strip()
                         logger.info("Uploaded activity %s to OSM (gpx id=%s)", activity_id, gpx_id)
                         add_processed_id(activity_id)
+                        consecutive_errors = 0
+                        if args.history:
+                            sleep_time = initial_sleep
 
-                time.sleep(1)
+                time.sleep(sleep_time)
 
             except Exception as e:
                 logger.exception("Error handling activity %s: %s", activity_id, e)
