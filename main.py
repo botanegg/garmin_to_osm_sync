@@ -350,14 +350,14 @@ def main():
             logger.info("No new activities to process")
             return
 
-        # --- HISTORY MODE ---
+         # --- HISTORY MODE ---
         if args.history:
-            max_per_run = 5
+            # history mode: process fetched activities slowly to avoid Garmin throttling.
             sleep_time = 10
-            logger.info("--history mode: processing up to %d activities, sleep %ds between uploads", max_per_run, sleep_time)
-            new_activities = new_activities[-max_per_run:]
+            logger.info("--history mode: processing %d activities (fetched %d), sleep %ds between uploads", len(new_activities), len(new_activities), sleep_time)
         else:
             sleep_time = 1
+
 
         for activity in reversed(new_activities):
             activity_id = activity.get("activityId")
