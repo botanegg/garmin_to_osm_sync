@@ -34,6 +34,7 @@ import json
 import logging
 import time
 import webbrowser
+import argparse
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlencode, parse_qs
@@ -315,9 +316,13 @@ def add_processed_id(activity_id, gpx_id=None, status='uploaded', metadata=None)
 
 # --- MAIN ---
 
-def main():
-    logger.info("Starting Garmin->OSM sync (OAuth2)")
 
+def main():
+    parser = argparse.ArgumentParser(description="Garmin Connect -> OSM GPX sync")
+    parser.add_argument("--history", action="store_true", help="Исторический режим: медленно, не более 5 активностей за запуск, увеличенный таймаут между запросами")
+    args = parser.parse_args()
+
+    logger.info("Starting Garmin->OSM sync (OAuth2)")
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
     if not all([GARMIN_EMAIL, GARMIN_PASSWORD]):
@@ -344,6 +349,15 @@ def main():
         if not new_activities:
             logger.info("No new activities to process")
             return
+
+        # --- HISTORY MODE ---
+        if args.history:
+            max_per_run = 5
+            sleep_time = 10
+            logger.info("--history mode: processing up to %d activities, sleep %ds between uploads", max_per_run, sleep_time)
+            new_activities = new_activities[-max_per_run:]
+        else:
+            sleep_time = 1
 
         for activity in reversed(new_activities):
             activity_id = activity.get("activityId")
@@ -391,7 +405,7 @@ def main():
                         logger.info("Uploaded activity %s to OSM (gpx id=%s)", activity_id, gpx_id)
                         add_processed_id(activity_id)
 
-                time.sleep(1)
+                time.sleep(sleep_time)
 
             except Exception as e:
                 logger.exception("Error handling activity %s: %s", activity_id, e)
